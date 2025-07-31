@@ -22,6 +22,9 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from datetime import datetime
+
 
 
 class GoldRSIStrategy(bt.Strategy):    
@@ -53,6 +56,12 @@ class GoldRSIStrategy(bt.Strategy):
         self.total_commission = 0
         self.order_count = 0  # Track total number of orders
         
+        self.portfolio_values = []  # Track portfolio value over time
+        self.dates = []            # Track dates
+        self.trade_dates = []      # Track trade dates
+        self.trade_values = []     # Track portfolio value at trade times
+        self.trade_types = []      # Track 'BUY' or 'SELL'
+        
     def notify_order(self, order):
         """Handle order notifications"""
         if order.status in [order.Submitted, order.Accepted]:
@@ -65,14 +74,25 @@ class GoldRSIStrategy(bt.Strategy):
             self.total_commission += order.executed.comm
             self.order_count += 1
             
+            current_date = self.datas[0].datetime.datetime(0)
+            current_value = self.broker.getvalue()
+            
             if order.isbuy():
                 self.log(f'BUY EXECUTED, Price: {order.executed.price:.2f}, '
                         f'Cost: {order.executed.value:.2f}, Comm: {order.executed.comm:.2f}')
                 self.buyprice = order.executed.price
                 self.buycomm = order.executed.comm
+                
+                self.trade_dates.append(current_date)
+                self.trade_values.append(current_value)
+                self.trade_types.append('BUY')
+                
             else:  # Sell
                 self.log(f'SELL EXECUTED, Price: {order.executed.price:.2f}, '
                         f'Cost: {order.executed.value:.2f}, Comm: {order.executed.comm:.2f}')
+                self.trade_dates.append(current_date)
+                self.trade_values.append(current_value)
+                self.trade_types.append('SELL')
                 
         elif order.status in [order.Canceled, order.Margin, order.Rejected]:
             self.log('Order Canceled/Margin/Rejected')
@@ -102,6 +122,11 @@ class GoldRSIStrategy(bt.Strategy):
             
     def next(self):
         """Main strategy logic - called for each bar"""
+        
+        current_date = self.datas[0].datetime.datetime(0)
+        current_value = self.broker.getvalue()
+        self.dates.append(current_date)
+        self.portfolio_values.append(current_value)
         
         # Check if we have an order pending
         if self.order:
@@ -144,7 +169,7 @@ class GoldDataFeed(bt.feeds.PandasData):
 
 def load_gold_data():
     """Load the processed gold data"""
-    data_path = Path("processed_data/gold.parquet")
+    data_path = Path("../processed_data/gold.parquet")
     
     if not data_path.exists():
         print("Error: Gold data not found. Please run extract_gold.py first.")
@@ -226,6 +251,96 @@ def calculate_performance_metrics(cerebro):
         print("No trades executed during backtest period")
         
     print("="*60)
+    
+def plot_portfolio_performance(strategy):
+    """Create a comprehensive portfolio performance chart"""
+    
+    # Create figure with subplots
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 12))
+    fig.suptitle('Gold RSI Strategy - Portfolio Performance (1988-2025)', fontsize=16, fontweight='bold')
+    
+    # Convert dates and values to arrays for plotting
+    dates = np.array(strategy.dates)
+    portfolio_values = np.array(strategy.portfolio_values)
+    
+    # Plot 1: Portfolio Value Over Time
+    ax1.plot(dates, portfolio_values, linewidth=2, color='darkblue', label='Portfolio Value')
+    ax1.axhline(y=10_000_000, color='red', linestyle='--', alpha=0.7, label='Initial Capital ($10M)')
+    
+    # Add trade markers
+    buy_dates = []
+    buy_values = []
+    sell_dates = []
+    sell_values = []
+    
+    for i, trade_type in enumerate(strategy.trade_types):
+        if trade_type == 'BUY':
+            buy_dates.append(strategy.trade_dates[i])
+            buy_values.append(strategy.trade_values[i])
+        else:
+            sell_dates.append(strategy.trade_dates[i])
+            sell_values.append(strategy.trade_values[i])
+    
+    # Plot buy and sell signals
+    if buy_dates:
+        ax1.scatter(buy_dates, buy_values, color='green', marker='^', s=50, alpha=0.7, label=f'Buy Signals ({len(buy_dates)})')
+    if sell_dates:
+        ax1.scatter(sell_dates, sell_values, color='red', marker='v', s=50, alpha=0.7, label=f'Sell Signals ({len(sell_dates)})')
+    
+    ax1.set_ylabel('Portfolio Value (USD)', fontsize=12)
+    ax1.set_title('Portfolio Value Over Time', fontsize=14)
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${x/1e6:.1f}M'))
+    
+    # Format x-axis
+    ax1.xaxis.set_major_locator(mdates.YearLocator(5))
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+    ax1.xaxis.set_minor_locator(mdates.YearLocator(1))
+    
+    # Plot 2: Cumulative Returns
+    initial_value = portfolio_values[0]
+    cumulative_returns = ((portfolio_values - initial_value) / initial_value) * 100
+    
+    ax2.plot(dates, cumulative_returns, linewidth=2, color='darkgreen', label='Cumulative Return (%)')
+    ax2.axhline(y=0, color='black', linestyle='-', alpha=0.5)
+    ax2.fill_between(dates, cumulative_returns, 0, alpha=0.3, color='green', where=(cumulative_returns >= 0))
+    ax2.fill_between(dates, cumulative_returns, 0, alpha=0.3, color='red', where=(cumulative_returns < 0))
+    
+    ax2.set_xlabel('Year', fontsize=12)
+    ax2.set_ylabel('Cumulative Return (%)', fontsize=12)
+    ax2.set_title('Cumulative Returns Over Time', fontsize=14)
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    # Format x-axis
+    ax2.xaxis.set_major_locator(mdates.YearLocator(5))
+    ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y'))
+    ax2.xaxis.set_minor_locator(mdates.YearLocator(1))
+    
+    # Add performance statistics as text
+    final_return = cumulative_returns[-1]
+    max_return = np.max(cumulative_returns)
+    min_return = np.min(cumulative_returns)
+    
+    stats_text = f"""Performance Summary:
+    Final Return: {final_return:.1f}%
+    Max Return: {max_return:.1f}%
+    Max Drawdown: {min_return:.1f}%
+    Total Trades: {strategy.trade_count}
+    Win Rate: {(strategy.winning_trades/strategy.trade_count)*100:.1f}%"""
+    
+    ax2.text(0.02, 0.98, stats_text, transform=ax2.transAxes, fontsize=10,
+             verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+    
+    plt.tight_layout()
+    
+    # Save the plot
+    plt.savefig('gold_rsi_portfolio_performance.png', dpi=300, bbox_inches='tight')
+    print("\n📊 Portfolio performance chart saved as 'gold_rsi_portfolio_performance.png'")
+    
+    # Show the plot
+    plt.show()
 
 
 def main():
@@ -290,8 +405,8 @@ def main():
     if 'max' in drawdown and 'drawdown' in drawdown['max']:
         print(f'Max Drawdown: {drawdown["max"]["drawdown"]:.2f}%')
     
-    # Skip plotting to avoid GUI issues and focus on results
-    print("\nSkipping plot generation to focus on performance metrics.")
+    strategy_instance = results[0]
+    plot_portfolio_performance(strategy_instance)
     print("Strategy completed successfully!")
 
 
