@@ -29,7 +29,7 @@ Systematic-Commodity-Trading/
 │   └── donchian_channel_strat.pdf         # PDF version of the report
 ├── raw_data/                        # Raw gold price data (Excel)
 │   └── MSCI_Comps.xlsx                    # Original data file
-└── README.md                        # This file                # This file
+└── README.md                       
 ```
 
 ## Strategy Implementation
